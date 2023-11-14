@@ -3,5 +3,5 @@ use tokio::{
     net::TcpStream,
 };
 
-pub trait Socket: AsyncRead + AsyncWrite {}
+pub trait Socket: AsyncRead + AsyncWrite + Unpin {}
 impl Socket for TcpStream {}
