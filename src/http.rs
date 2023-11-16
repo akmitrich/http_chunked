@@ -6,8 +6,8 @@ use tokio::net::{TcpStream, ToSocketAddrs};
 #[derive(Debug)]
 pub struct HttpContext<S: Socket = TcpStream> {
     socket: S,
-    response_meta: Vec<u8>,
-    response_body_chunk: Vec<u8>,
+    pub response_meta: Vec<u8>,
+    pub response_body_chunk: Vec<u8>,
 }
 
 impl HttpContext {
@@ -69,18 +69,32 @@ impl<S: Socket> HttpContext<S> {
     pub async fn response_begin(&mut self) -> anyhow::Result<()> {
         const RESPONSE_HEADERS_SIZE: usize = 8 * 1024;
         let mut buf = [0; RESPONSE_HEADERS_SIZE];
-        let n = self
-            .socket
-            .read(&mut buf)
-            .await
-            .context("read response begin")?;
-        let payload_index = buf[..n]
-            .windows(4)
-            .enumerate()
-            .find(|(_, w)| w.eq(b"\r\n\r\n"))
-            .map(|(i, _)| i)
-            .ok_or_else(|| anyhow::Error::msg("8kB was not enough for response headers"))?;
-        self.response_meta = buf[..payload_index].to_owned();
+        loop {
+            let n = self
+                .socket
+                .read(&mut buf)
+                .await
+                .context("read response begin")?;
+            if n == 0 {
+                break;
+            }
+            match buf[..n]
+                .windows(4)
+                .enumerate()
+                .find(|(_, w)| w.eq(b"\r\n\r\n"))
+            {
+                Some((payload_index, _)) => {
+                    self.response_meta.extend_from_slice(&buf[..payload_index]);
+                    let body_index = payload_index + 4;
+                    if body_index < n {
+                        self.response_body_chunk
+                            .extend_from_slice(&buf[body_index..n]);
+                    }
+                    break;
+                }
+                None => self.response_meta.extend_from_slice(&buf[..n]),
+            }
+        }
         Ok(())
     }
 

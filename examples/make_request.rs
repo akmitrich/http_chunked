@@ -1,4 +1,4 @@
-const HOST: &str = "localhost:8000";
+const HOST: &str = "mail.ru:80";
 const _KEY: &str = "ABCD67520001";
 
 #[tokio::main]
@@ -6,7 +6,7 @@ async fn main() -> anyhow::Result<()> {
     let mut http = http_chunked::HttpContext::new(HOST).await?;
     http.begin();
     loop {
-        http.begin_request(http_chunked::Method::Get, "/mail")
+        http.begin_request(http_chunked::Method::Get, "/")
             .await?;
         {
             http.request_header("Host", HOST).await?;
@@ -20,8 +20,13 @@ async fn main() -> anyhow::Result<()> {
 
         http.response_begin().await?;
         //     if http.status().is_success() {
-        //         for chunk in http.response_chunk_iter() {}
-        //     }
+        {
+            println!("Meta:\n{}\n", std::str::from_utf8(&http.response_meta).unwrap());
+            println!(
+                "Body chunk:\n{}",
+                std::str::from_utf8(&http.response_body_chunk).unwrap()
+            );
+        }
         http.response_end();
         break;
     }
