@@ -1,7 +1,12 @@
+pub mod headers;
+pub mod status_line;
+
 use crate::{Method, Socket};
 use anyhow::{Context, Ok};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpStream, ToSocketAddrs};
+
+use self::status_line::Status;
 
 #[derive(Debug)]
 pub struct HttpContext<S: Socket = TcpStream> {
@@ -98,6 +103,14 @@ impl<S: Socket> HttpContext<S> {
         Ok(())
     }
 
+    pub fn status(&self) -> anyhow::Result<Status> {
+        Status::new(&self.response_meta)
+    }
+
+    pub fn header_iter(&self) -> headers::HeaderIter {
+        headers::HeaderIter::new(skip_line(&self.response_meta))
+    }
+
     pub fn response_end(&mut self) {}
 }
 
@@ -108,5 +121,22 @@ impl<S: Socket> HttpContext<S> {
             .await
             .context("write str to socket")
             .map_err(|e| e.into())
+    }
+}
+
+fn end_of_line(line: &[u8]) -> usize {
+    line.windows(2)
+        .enumerate()
+        .find(|(_, w)| w.eq(b"\r\n"))
+        .map(|(i, _)| i)
+        .unwrap_or_else(|| line.len())
+}
+
+fn skip_line(line: &[u8]) -> &[u8] {
+    let end_of_line = end_of_line(line);
+    if end_of_line == line.len() {
+        &line[end_of_line..end_of_line]
+    } else {
+        &line[(end_of_line + 2)..]
     }
 }
