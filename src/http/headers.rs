@@ -1,4 +1,4 @@
-use super::end_of_line;
+use super::{get_line, skip_line};
 
 #[derive(Debug)]
 pub struct HeaderIter<'a> {
@@ -13,13 +13,8 @@ impl<'a> Iterator for HeaderIter<'a> {
         if self.cursor.is_empty() {
             return None;
         }
-        let end_index = end_of_line(self.cursor);
-        let result = &self.cursor[..end_index];
-        self.cursor = if end_index == self.cursor.len() {
-            &self.cursor[end_index..end_index]
-        } else {
-            &self.cursor[(end_index + 2)..]
-        };
+        let result = get_line(self.cursor);
+        self.cursor = skip_line(self.cursor);
         Some(result)
     }
 }
