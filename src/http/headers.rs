@@ -3,7 +3,6 @@ use super::{get_line, skip_line};
 #[derive(Debug)]
 pub struct HeaderIter<'a> {
     cursor: &'a [u8],
-    content_length: Option<usize>,
 }
 
 impl<'a> Iterator for HeaderIter<'a> {
@@ -21,9 +20,6 @@ impl<'a> Iterator for HeaderIter<'a> {
 
 impl<'a> HeaderIter<'a> {
     pub fn new(cursor: &'a [u8]) -> Self {
-        Self {
-            cursor,
-            content_length: None,
-        }
+        Self { cursor }
     }
 }

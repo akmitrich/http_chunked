@@ -1,5 +1,3 @@
-use anyhow::Context;
-
 const HOST: &str = "api.asmsolutions.ru:80";
 const _KEY: &str = "ABCD67520001";
 
@@ -18,18 +16,25 @@ async fn main() -> anyhow::Result<()> {
             http.request_body_chunk(b"Test, test\nTest!\n").await?;
         }
         http.end_request();
+        println!("The request has been sent.\n{}", "-".repeat(40));
 
         http.response_begin().await?;
         if http.status()?.is_success() {
-            println!("Status: {:?}\n\nHeaders:", http.status()?,);
-            for header in http.header_iter() {
+            println!(
+                "Status: {:?}\n\nHeaders:\n{}",
+                http.status()?,
+                "-".repeat(40)
+            );
+            for header in http.response_header_iter() {
                 println!("{}", std::str::from_utf8(header).unwrap());
             }
-            println!(
-                "Body chunk: {:?}\n{}",
-                http.status(),
-                std::str::from_utf8(&http.response_body_chunk).context("non-UTF8 in body chunk")?
-            );
+            println!("{}", "-".repeat(40));
+            println!("Body length: {:?} bytes", http.response_body_left())
+            // println!(
+            //     "Body chunk: {:?}\n{}",
+            //     http.status(),
+            //     std::str::from_utf8(&http.response_body_chunk).context("non-UTF8 in body chunk")?
+            // );
         }
         http.response_end();
         break;

@@ -1,5 +1,5 @@
 use crate::{Method, Socket};
-use anyhow::{Context, Ok};
+use anyhow::Context;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpStream, ToSocketAddrs};
 
@@ -9,6 +9,7 @@ use super::status_line::Status;
 #[derive(Debug)]
 pub struct HttpContext<S: Socket = TcpStream> {
     socket: S,
+    response_remain_len: Option<usize>,
     pub response_meta: Vec<u8>,
     pub response_body_chunk: Vec<u8>,
 }
@@ -19,6 +20,7 @@ impl HttpContext {
             socket: TcpStream::connect(host)
                 .await
                 .context("establish connection to some host")?,
+            response_remain_len: None,
             response_meta: vec![],
             response_body_chunk: vec![],
         })
@@ -98,6 +100,7 @@ impl<S: Socket> HttpContext<S> {
                 None => self.response_meta.extend_from_slice(&buf[..n]),
             }
         }
+        self.response_remain_len = self.check_response_length();
         Ok(())
     }
 
@@ -105,11 +108,30 @@ impl<S: Socket> HttpContext<S> {
         Status::new(&self.response_meta)
     }
 
-    pub fn header_iter(&self) -> HeaderIter {
+    pub fn response_header_iter(&self) -> HeaderIter {
         HeaderIter::new(skip_line(&self.response_meta))
     }
 
     pub fn response_end(&mut self) {}
+}
+
+impl<S: Socket> HttpContext<S> {
+    pub fn check_response_length(&self) -> Option<usize> {
+        for header in self.response_header_iter() {
+            if let Ok(header) = std::str::from_utf8(header) {
+                if let Some((name, value)) = header.trim().split_once(':') {
+                    if name.trim().to_ascii_lowercase().eq("content-length") {
+                        return value.trim().parse().ok();
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    pub fn response_body_left(&self) -> Option<usize> {
+        self.response_remain_len
+    }
 }
 
 impl<S: Socket> HttpContext<S> {
