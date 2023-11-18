@@ -3,15 +3,14 @@ use anyhow::Context;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpStream, ToSocketAddrs};
 
-use super::headers::HeaderIter;
+use super::headers::{HeaderIter, HttpHeader};
 use super::skip_line;
 use super::status_line::Status;
 #[derive(Debug)]
 pub struct HttpContext<S: Socket = TcpStream> {
     socket: S,
-    response_remain_len: Option<usize>,
     pub response_meta: Vec<u8>,
-    pub response_body_chunk: Vec<u8>,
+    pub response_first_chunk: Vec<u8>,
 }
 
 impl HttpContext {
@@ -20,9 +19,8 @@ impl HttpContext {
             socket: TcpStream::connect(host)
                 .await
                 .context("establish connection to some host")?,
-            response_remain_len: None,
             response_meta: vec![],
-            response_body_chunk: vec![],
+            response_first_chunk: vec![],
         })
     }
     pub fn host(&self) -> String {
@@ -72,8 +70,8 @@ impl<S: Socket> HttpContext<S> {
 
 impl<S: Socket> HttpContext<S> {
     pub async fn response_begin(&mut self) -> anyhow::Result<()> {
-        const RESPONSE_HEADERS_SIZE: usize = 8 * 1024;
-        let mut buf = [0; RESPONSE_HEADERS_SIZE];
+        const MAX_HEADERS_SIZE: usize = 4 * 1024;
+        let mut buf = [0; MAX_HEADERS_SIZE];
         loop {
             let n = self
                 .socket
@@ -92,7 +90,7 @@ impl<S: Socket> HttpContext<S> {
                     self.response_meta.extend_from_slice(&buf[..payload_index]);
                     let body_index = payload_index + 4;
                     if body_index < n {
-                        self.response_body_chunk
+                        self.response_first_chunk
                             .extend_from_slice(&buf[body_index..n]);
                     }
                     break;
@@ -100,7 +98,6 @@ impl<S: Socket> HttpContext<S> {
                 None => self.response_meta.extend_from_slice(&buf[..n]),
             }
         }
-        self.response_remain_len = self.check_response_length();
         Ok(())
     }
 
@@ -112,25 +109,41 @@ impl<S: Socket> HttpContext<S> {
         HeaderIter::new(skip_line(&self.response_meta))
     }
 
+    pub async fn response_body_chunk_read(&mut self, buf: &mut [u8]) -> anyhow::Result<usize> {
+        let need = buf.len();
+        let has = self.response_first_chunk.len();
+        if self.response_first_chunk.len() > need {
+            buf.copy_from_slice(&self.response_first_chunk[..need]);
+            self.response_first_chunk = Vec::from(&self.response_first_chunk[need..]);
+            return Ok(need);
+        } else {
+            let place = &mut buf[..has];
+            place.copy_from_slice(&self.response_first_chunk);
+            self.response_first_chunk.clear();
+        }
+        match self.socket.read(&mut buf[has..]).await {
+            Ok(has_read) => Ok(has + has_read),
+            Err(e) => {
+                if has > 0 {
+                    Ok(has)
+                } else {
+                    Err(e).context("cannot read from connection")
+                }
+            }
+        }
+    }
+
     pub fn response_end(&mut self) {}
 }
 
 impl<S: Socket> HttpContext<S> {
     pub fn check_response_length(&self) -> Option<usize> {
         for header in self.response_header_iter() {
-            if let Ok(header) = std::str::from_utf8(header) {
-                if let Some((name, value)) = header.trim().split_once(':') {
-                    if name.trim().to_ascii_lowercase().eq("content-length") {
-                        return value.trim().parse().ok();
-                    }
-                }
+            if let HttpHeader::ContentLength(size) = header {
+                return Some(size);
             }
         }
         None
-    }
-
-    pub fn response_body_left(&self) -> Option<usize> {
-        self.response_remain_len
     }
 }
 
