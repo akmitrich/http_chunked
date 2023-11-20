@@ -4,6 +4,7 @@ pub enum Method {
     Post,
 }
 
+// TODO: consider not to use the AsRef trait
 impl AsRef<str> for Method {
     fn as_ref(&self) -> &str {
         match self {

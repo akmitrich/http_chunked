@@ -7,6 +7,7 @@ pub enum HttpHeader {
     Custom { name: String, value: String },
     ContentLength(usize),
     ContentType { media_type: String },
+    TransferEncoding,
 }
 
 impl HttpHeader {
@@ -22,6 +23,17 @@ impl HttpHeader {
                 name: name.to_owned(),
                 value: value.to_owned(),
             }),
+        }
+    }
+}
+
+impl ToString for HttpHeader {
+    fn to_string(&self) -> String {
+        match self {
+            Self::ContentLength(length) => format!("Content-Length: {}", length),
+            Self::ContentType { media_type } => format!("Content-Type: {}", media_type),
+            Self::TransferEncoding => "Transfer-Encoding: chunked".to_owned(),
+            Self::Custom { name, value } => format!("{}: {}", name, value),
         }
     }
 }

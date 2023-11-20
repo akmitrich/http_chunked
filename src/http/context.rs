@@ -40,17 +40,13 @@ impl<S: Socket> HttpContext<S> {
         resource: impl AsRef<str>,
     ) -> anyhow::Result<()> {
         let msg = format!("{} {} HTTP/1.0\r\n", method.as_ref(), resource.as_ref());
-        self.write_str(&msg).await.context("begin request")
+        self.write_str(&msg).await.context("send start line")
     }
 
     pub fn end_request(&mut self) {}
 
-    pub async fn request_header(
-        &mut self,
-        name: impl AsRef<str>,
-        value: impl AsRef<str>,
-    ) -> anyhow::Result<()> {
-        let msg = format!("{}: {}\r\n", name.as_ref(), value.as_ref());
+    pub async fn request_header(&mut self, header: HttpHeader) -> anyhow::Result<()> {
+        let msg = format!("{}\r\n", header.to_string());
         self.write_str(&msg).await.context("request header")
     }
 
@@ -64,7 +60,7 @@ impl<S: Socket> HttpContext<S> {
         self.socket
             .write_all(chunk.as_ref())
             .await
-            .context("request body chunk")
+            .context("send request body chunk")
     }
 }
 
@@ -72,6 +68,7 @@ impl<S: Socket> HttpContext<S> {
     pub async fn response_begin(&mut self) -> anyhow::Result<()> {
         const MAX_HEADERS_SIZE: usize = 4 * 1024;
         let mut buf = [0; MAX_HEADERS_SIZE];
+        self.response_meta.clear();
         loop {
             let n = self
                 .socket
@@ -153,6 +150,5 @@ impl<S: Socket> HttpContext<S> {
             .write_all(data.as_bytes())
             .await
             .context("write str to socket")
-            .map_err(|e| e.into())
     }
 }

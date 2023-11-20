@@ -2,15 +2,14 @@ use anyhow::Context;
 use http_chunked::HttpHeader;
 use std::io::Write;
 
-const HOST: &str = "api.asmsolutions.ru:80";
-const _KEY: &str = "ABCD67520001";
-
+const HOST: &str = "anglesharp.azurewebsites.net:80";
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let mut http = http_chunked::HttpContext::new(HOST).await?;
     http.begin();
     {
-        http.begin_request(http_chunked::Method::Get, "/").await?;
+        http.begin_request(http_chunked::Method::Get, "/Chunked")
+            .await?;
         {
             http.request_header(HttpHeader::from_name_value("Host", HOST)?)
                 .await?;
@@ -20,8 +19,6 @@ async fn main() -> anyhow::Result<()> {
                 .await?;
             http.request_header(HttpHeader::ContentLength(0)).await?;
             http.request_headers_end().await?;
-            http.request_body_chunk(b"Hello immediate World!\n").await?;
-            http.request_body_chunk(b"Test, test\nTest!\n").await?;
         }
         http.end_request();
         println!("The request has been sent.\n{}", "-".repeat(40));
@@ -58,5 +55,5 @@ async fn main() -> anyhow::Result<()> {
         http.response_end();
     }
     http.end();
-    Ok(println!("OK."))
+    Ok(println!("Ok."))
 }
