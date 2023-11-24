@@ -80,7 +80,7 @@ mod test {
 
     #[test]
     fn try_http_date() {
-        let h = HttpHeader::from_name_value("Date", " Fri, 24 Nov 2023 06:58:19 GMT");
-        println!("{:?} -> {}", h, h.as_ref().unwrap().to_string());
+        let h = HttpHeader::from_name_value("Date", " Fri, 24 Nov 2023 06:58:19 GMT").unwrap();
+        assert_eq!("Fri, 24 Nov 2023 06:58:19 GMT", h.to_string());
     }
 }

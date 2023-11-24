@@ -1,4 +1,5 @@
 use std::cell::RefCell;
+use std::ops::{AddAssign, DerefMut};
 
 use crate::{Method, Socket};
 use anyhow::Context;
@@ -102,9 +103,9 @@ impl<S: Socket> HttpContext<S> {
         }
         for header in self.response_header_iter() {
             if let HttpHeader::ContentLength(content_length) = header {
-                self.state.replace(State::Response {
+                self.state.replace(State::Content {
                     content_length,
-                    bytes_left: content_length,
+                    bytes_read: 0,
                 });
             }
         }
@@ -124,19 +125,46 @@ impl<S: Socket> HttpContext<S> {
     }
 
     pub async fn response_body_chunk_read(&mut self, buf: &mut [u8]) -> anyhow::Result<usize> {
-        let need = buf.len();
+        match self.state() {
+            State::SendingRequest => Err(anyhow::Error::msg(
+                "unexpected read call while sending request",
+            )),
+            State::Content {
+                content_length: _,
+                bytes_read: _,
+            } => self.get_response_chunk(buf).await,
+            State::Chunked {
+                chunk_size,
+                bytes_read: bytes_left,
+            } => todo!(),
+            State::Exhausted => Err(anyhow::Error::msg("context exhausted")),
+        }
+    }
+
+    async fn get_response_chunk(&mut self, buf: &mut [u8]) -> anyhow::Result<usize> {
+        let need = buf.len().min(self.bytes_wait()?);
         let has = self.response_start.len();
-        if self.response_start.len() > need {
+        if has > need {
+            println!("start has {}, need {need}", self.response_start.len());
             buf.copy_from_slice(&self.response_start[..need]);
             self.response_start = Vec::from(&self.response_start[need..]);
+            self.reduce_bytes(need)?;
             return Ok(need);
-        } else {
+        } else if has > 0 {
             let place = &mut buf[..has];
             place.copy_from_slice(&self.response_start);
             self.response_start.clear();
+            println!("has = {}", has)
         }
-        match self.socket.read(&mut buf[has..]).await {
-            Ok(has_read) => Ok(has + has_read),
+        match self.socket.read(&mut buf[has..need]).await {
+            Ok(has_read) => {
+                let result = has + has_read;
+                if result != buf.len() {
+                    println!("have read {} but asked {}", result, buf.len());
+                }
+                self.reduce_bytes(result)?;
+                Ok(result)
+            }
             Err(e) => {
                 if has > 0 {
                     Ok(has)
@@ -159,6 +187,35 @@ impl<S: Socket> HttpContext<S> {
         }
         None
     }
+
+    fn bytes_wait(&self) -> anyhow::Result<usize> {
+        match self.state() {
+            State::Content {
+                content_length,
+                bytes_read,
+            } => Ok(content_length - bytes_read),
+            State::Chunked {
+                chunk_size,
+                bytes_read,
+            } => Ok(chunk_size - bytes_read),
+            _ => Err(anyhow::Error::msg("ask for bytes read")),
+        }
+    }
+
+    fn reduce_bytes(&mut self, bytes: usize) -> anyhow::Result<()> {
+        match self.state.borrow_mut().deref_mut() {
+            State::Content {
+                content_length: _,
+                bytes_read,
+            } => bytes_read.add_assign(bytes),
+            State::Chunked {
+                chunk_size: _,
+                bytes_read,
+            } => bytes_read.add_assign(bytes),
+            _ => return Err(anyhow::Error::msg("ask for bytes reduce")),
+        }
+        Ok(())
+    }
 }
 
 impl<S: Socket> HttpContext<S> {
@@ -174,13 +231,13 @@ mod context_state {
     #[derive(Debug, Clone, Copy, PartialEq)]
     pub enum State {
         SendingRequest,
-        Response {
+        Content {
             content_length: usize,
-            bytes_left: usize,
+            bytes_read: usize,
         },
-        ChunkedResponse {
+        Chunked {
             chunk_size: usize,
-            bytes_left: usize,
+            bytes_read: usize,
         },
         Exhausted,
     }

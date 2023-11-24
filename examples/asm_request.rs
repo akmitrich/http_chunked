@@ -43,17 +43,18 @@ async fn main() -> anyhow::Result<()> {
         if http.status()?.is_success() {
             println!("Body length: {:?} bytes", bytes_left);
             let mut output = std::fs::File::create("../get.pdf").context("create output file")?;
-            let mut buf = [0; 1024];
+            let mut buf = [0; 4096];
             let mut total = 0;
             while bytes_left > 0 {
                 let n = http.response_body_chunk_read(&mut buf).await?;
+                println!("n = {}, total = {}, left = {}", n, total, bytes_left);
                 output
                     .write_all(&buf[..n])
                     .context("write to output file")?;
                 total += n;
                 bytes_left -= n;
             }
-            println!("{} bytes saved to {:?}", total, output);
+            println!("Has written {} bytes", total);
         }
         http.response_end();
     }
