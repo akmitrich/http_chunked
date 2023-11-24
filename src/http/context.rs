@@ -9,13 +9,13 @@ use tokio::net::{TcpStream, ToSocketAddrs};
 use self::context_state::State;
 
 use super::headers::{HeaderIter, HttpHeader};
-use super::skip_line;
 use super::status_line::Status;
+use super::{get_line, skip_line};
 #[derive(Debug)]
 pub struct HttpContext<S: Socket = TcpStream> {
     socket: S,
     pub response_meta: Vec<u8>,
-    pub response_start: Vec<u8>,
+    pub rollin: Vec<u8>,
     state: RefCell<State>,
 }
 
@@ -26,7 +26,7 @@ impl HttpContext {
                 .await
                 .context("establish connection to some host")?,
             response_meta: vec![],
-            response_start: vec![],
+            rollin: vec![],
             state: RefCell::new(State::SendingRequest),
         })
     }
@@ -94,13 +94,14 @@ impl<S: Socket> HttpContext<S> {
                     self.response_meta.extend_from_slice(&buf[..payload_index]);
                     let body_index = payload_index + 4;
                     if body_index < n {
-                        self.response_start.extend_from_slice(&buf[body_index..n]);
+                        self.rollin.extend_from_slice(&buf[body_index..n]);
                     }
                     break;
                 }
                 None => self.response_meta.extend_from_slice(&buf[..n]),
             }
         }
+        let mut chunked = false;
         for header in self.response_header_iter() {
             if let HttpHeader::ContentLength(content_length) = header {
                 self.state.replace(State::Content {
@@ -108,6 +109,12 @@ impl<S: Socket> HttpContext<S> {
                     bytes_read: 0,
                 });
             }
+            if let HttpHeader::TransferEncoding = header {
+                chunked = true;
+            }
+        }
+        if chunked {
+            self.start_chunk().await?;
         }
         Ok(())
     }
@@ -132,42 +139,59 @@ impl<S: Socket> HttpContext<S> {
             State::Content {
                 content_length: _,
                 bytes_read: _,
-            } => self.get_response_chunk(buf).await,
+            } => {
+                let n = self.get_chunk(buf).await?;
+                if self.bytes_wait()? == 0 {
+                    self.state.replace(State::Exhausted);
+                }
+                Ok(n)
+            }
             State::Chunked {
-                chunk_size,
-                bytes_read: bytes_left,
-            } => todo!(),
+                chunk_size: _,
+                bytes_read: _,
+            } => {
+                let n = self.get_chunk(buf).await?;
+                println!(
+                    "Read chunk. Left in rolling: {:?}",
+                    std::str::from_utf8(&self.rollin).unwrap()
+                );
+                if self.bytes_wait()? == 0 {
+                    self.end_chunk().await?;
+                }
+                Ok(n)
+            }
             State::Exhausted => Err(anyhow::Error::msg("context exhausted")),
         }
     }
 
-    async fn get_response_chunk(&mut self, buf: &mut [u8]) -> anyhow::Result<usize> {
+    async fn get_chunk(&mut self, buf: &mut [u8]) -> anyhow::Result<usize> {
         let need = buf.len().min(self.bytes_wait()?);
-        let has = self.response_start.len();
-        if has > need {
-            println!("start has {}, need {need}", self.response_start.len());
-            buf.copy_from_slice(&self.response_start[..need]);
-            self.response_start = Vec::from(&self.response_start[need..]);
+        let start = self.rollin.len();
+        if start > need {
+            println!("start has {}, need {need}", self.rollin.len());
+            buf[..need].copy_from_slice(&self.rollin[..need]);
+            self.rollin = self.rollin[need..].to_vec();
             self.reduce_bytes(need)?;
             return Ok(need);
-        } else if has > 0 {
-            let place = &mut buf[..has];
-            place.copy_from_slice(&self.response_start);
-            self.response_start.clear();
-            println!("has = {}", has)
         }
-        match self.socket.read(&mut buf[has..need]).await {
+
+        let place = &mut buf[..start];
+        place.copy_from_slice(&self.rollin);
+        self.rollin.clear();
+        self.reduce_bytes(start)?;
+
+        println!("Look to socket");
+        match self.socket.read(&mut buf[start..need]).await {
             Ok(has_read) => {
-                let result = has + has_read;
-                if result != buf.len() {
-                    println!("have read {} but asked {}", result, buf.len());
+                if has_read + start != buf.len() {
+                    println!("have read {} but asked {}", has_read + start, buf.len());
                 }
-                self.reduce_bytes(result)?;
-                Ok(result)
+                self.reduce_bytes(has_read)?;
+                Ok(has_read + start)
             }
             Err(e) => {
-                if has > 0 {
-                    Ok(has)
+                if start > 0 {
+                    Ok(start)
                 } else {
                     Err(e).context("cannot read from connection")
                 }
@@ -179,13 +203,31 @@ impl<S: Socket> HttpContext<S> {
 }
 
 impl<S: Socket> HttpContext<S> {
-    pub fn check_response_length(&self) -> Option<usize> {
-        for header in self.response_header_iter() {
-            if let HttpHeader::ContentLength(size) = header {
-                return Some(size);
-            }
+    pub fn has_response(&self) -> bool {
+        match self.state() {
+            State::SendingRequest => false,
+            State::Content {
+                content_length: _,
+                bytes_read: _,
+            } => true,
+            State::Chunked {
+                chunk_size: _,
+                bytes_read: _,
+            } => true,
+            State::Exhausted => false,
         }
-        None
+    }
+
+    pub fn content_length(&self) -> anyhow::Result<usize> {
+        if let State::Content {
+            content_length,
+            bytes_read: _,
+        } = self.state()
+        {
+            Ok(content_length)
+        } else {
+            Err(anyhow::Error::msg("no content length"))
+        }
     }
 
     fn bytes_wait(&self) -> anyhow::Result<usize> {
@@ -215,6 +257,56 @@ impl<S: Socket> HttpContext<S> {
             _ => return Err(anyhow::Error::msg("ask for bytes reduce")),
         }
         Ok(())
+    }
+
+    async fn start_chunk(&mut self) -> anyhow::Result<()> {
+        loop {
+            let chunk_size_str =
+                std::str::from_utf8(get_line(&self.rollin)).context("start chunk with non-UTF8")?;
+            if self.rollin.len() > chunk_size_str.len() {
+                let chunk_size = usize::from_str_radix(chunk_size_str, 16)
+                    .context("chunk header is not hexadecimal")?;
+                println!("Start chunk. Size = {} {:x}", chunk_size, chunk_size);
+                if chunk_size == 0 {
+                    self.state.replace(State::Exhausted);
+                } else {
+                    self.state.replace(State::Chunked {
+                        chunk_size,
+                        bytes_read: 0,
+                    });
+                }
+                self.rollin = skip_line(&self.rollin).to_vec();
+                break;
+            }
+            let mut buf = [0; 1024];
+            println!("Start chunk. Look to socket");
+            let n = self.socket.read(&mut buf).await?;
+            if n == 0 {
+                println!("Start chunk. wait 0.1 s");
+                tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+            } else {
+                self.rollin.extend_from_slice(&buf[..n]);
+            }
+        }
+        Ok(())
+    }
+
+    async fn end_chunk(&mut self) -> anyhow::Result<()> {
+        loop {
+            if self.rollin.starts_with(b"\r\n") {
+                self.rollin = self.rollin[2..].to_vec();
+                return self.start_chunk().await;
+            }
+            let mut buf = [0; 2];
+            println!("End chunk. Look to socket");
+            let n = self.socket.read(&mut buf).await?;
+            if n == 0 {
+                println!("End chunk. wait 0.1 s");
+                tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+            } else {
+                self.rollin.extend_from_slice(&buf[..n]);
+            }
+        }
     }
 }
 

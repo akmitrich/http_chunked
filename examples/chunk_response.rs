@@ -29,29 +29,29 @@ async fn main() -> anyhow::Result<()> {
             http.status()?,
             "-".repeat(40)
         );
-        let mut bytes_left = 0;
+        println!(
+            "Before {:?} -> {:?}",
+            http.state(),
+            std::str::from_utf8(&http.rollin)
+        );
         for header in http.response_header_iter() {
             println!("{:?}", header);
-            if let http_chunked::HttpHeader::ContentLength(len) = header {
-                bytes_left = len;
-            }
         }
         println!("{}", "-".repeat(40));
-        if http.status()?.is_success() {
-            println!("Body length: {:?} bytes", bytes_left);
-            let mut output = std::fs::File::create("../get.pdf").context("create output file")?;
-            let mut buf = [0; 1024];
-            let mut total = 0;
-            while bytes_left > 0 {
-                let n = http.response_body_chunk_read(&mut buf).await?;
-                output
-                    .write_all(&buf[..n])
-                    .context("write to output file")?;
-                total += n;
-                bytes_left -= n;
+        let mut buf = [0; 4096];
+        for i in 1.. {
+            let n = http.response_body_chunk_read(&mut buf).await?;
+            println!("Chunk {}. {:?}", i, std::str::from_utf8(&buf[..n]));
+            if !http.has_response() {
+                break;
             }
-            println!("{} bytes saved to {:?}", total, output);
         }
+
+        println!(
+            "After {:?} -> {:?}",
+            http.state(),
+            std::str::from_utf8(&http.rollin)
+        );
         http.response_end();
     }
     http.end();
