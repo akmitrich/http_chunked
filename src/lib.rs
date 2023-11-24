@@ -1,7 +1,5 @@
 mod http;
-mod method;
 mod socket;
 
-pub use http::{headers::HttpHeader, HttpContext};
-pub use method::Method;
+pub use http::{headers::HttpHeader, method::Method, HttpContext};
 pub use socket::Socket;

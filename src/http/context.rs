@@ -1,7 +1,11 @@
+use std::cell::RefCell;
+
 use crate::{Method, Socket};
 use anyhow::Context;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpStream, ToSocketAddrs};
+
+use self::context_state::State;
 
 use super::headers::{HeaderIter, HttpHeader};
 use super::skip_line;
@@ -10,7 +14,8 @@ use super::status_line::Status;
 pub struct HttpContext<S: Socket = TcpStream> {
     socket: S,
     pub response_meta: Vec<u8>,
-    pub response_first_chunk: Vec<u8>,
+    pub response_start: Vec<u8>,
+    state: RefCell<State>,
 }
 
 impl HttpContext {
@@ -20,7 +25,8 @@ impl HttpContext {
                 .await
                 .context("establish connection to some host")?,
             response_meta: vec![],
-            response_first_chunk: vec![],
+            response_start: vec![],
+            state: RefCell::new(State::SendingRequest),
         })
     }
     pub fn host(&self) -> String {
@@ -39,7 +45,7 @@ impl<S: Socket> HttpContext<S> {
         method: Method,
         resource: impl AsRef<str>,
     ) -> anyhow::Result<()> {
-        let msg = format!("{} {} HTTP/1.0\r\n", method.as_ref(), resource.as_ref());
+        let msg = format!("{} {} HTTP/1.1\r\n", method.as_ref(), resource.as_ref());
         self.write_str(&msg).await.context("send start line")
     }
 
@@ -87,12 +93,19 @@ impl<S: Socket> HttpContext<S> {
                     self.response_meta.extend_from_slice(&buf[..payload_index]);
                     let body_index = payload_index + 4;
                     if body_index < n {
-                        self.response_first_chunk
-                            .extend_from_slice(&buf[body_index..n]);
+                        self.response_start.extend_from_slice(&buf[body_index..n]);
                     }
                     break;
                 }
                 None => self.response_meta.extend_from_slice(&buf[..n]),
+            }
+        }
+        for header in self.response_header_iter() {
+            if let HttpHeader::ContentLength(content_length) = header {
+                self.state.replace(State::Response {
+                    content_length,
+                    bytes_left: content_length,
+                });
             }
         }
         Ok(())
@@ -102,21 +115,25 @@ impl<S: Socket> HttpContext<S> {
         Status::new(&self.response_meta)
     }
 
+    pub fn state(&self) -> State {
+        *self.state.borrow()
+    }
+
     pub fn response_header_iter(&self) -> HeaderIter {
         HeaderIter::new(skip_line(&self.response_meta))
     }
 
     pub async fn response_body_chunk_read(&mut self, buf: &mut [u8]) -> anyhow::Result<usize> {
         let need = buf.len();
-        let has = self.response_first_chunk.len();
-        if self.response_first_chunk.len() > need {
-            buf.copy_from_slice(&self.response_first_chunk[..need]);
-            self.response_first_chunk = Vec::from(&self.response_first_chunk[need..]);
+        let has = self.response_start.len();
+        if self.response_start.len() > need {
+            buf.copy_from_slice(&self.response_start[..need]);
+            self.response_start = Vec::from(&self.response_start[need..]);
             return Ok(need);
         } else {
             let place = &mut buf[..has];
-            place.copy_from_slice(&self.response_first_chunk);
-            self.response_first_chunk.clear();
+            place.copy_from_slice(&self.response_start);
+            self.response_start.clear();
         }
         match self.socket.read(&mut buf[has..]).await {
             Ok(has_read) => Ok(has + has_read),
@@ -150,5 +167,21 @@ impl<S: Socket> HttpContext<S> {
             .write_all(data.as_bytes())
             .await
             .context("write str to socket")
+    }
+}
+
+mod context_state {
+    #[derive(Debug, Clone, Copy, PartialEq)]
+    pub enum State {
+        SendingRequest,
+        Response {
+            content_length: usize,
+            bytes_left: usize,
+        },
+        ChunkedResponse {
+            chunk_size: usize,
+            bytes_left: usize,
+        },
+        Exhausted,
     }
 }

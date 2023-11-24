@@ -7,6 +7,7 @@ pub enum HttpHeader {
     Custom { name: String, value: String },
     ContentLength(usize),
     ContentType { media_type: String },
+    Date(httpdate::HttpDate),
     TransferEncoding,
 }
 
@@ -19,6 +20,8 @@ impl HttpHeader {
             "content-type" => Ok(Self::ContentType {
                 media_type: value.trim().to_owned(),
             }),
+            "date" => Ok(Self::Date(value.parse()?)),
+            "transfer-encoding" => Ok(Self::TransferEncoding),
             _ => Ok(Self::Custom {
                 name: name.to_owned(),
                 value: value.to_owned(),
@@ -32,6 +35,7 @@ impl ToString for HttpHeader {
         match self {
             Self::ContentLength(length) => format!("Content-Length: {}", length),
             Self::ContentType { media_type } => format!("Content-Type: {}", media_type),
+            Self::Date(date) => date.to_string(),
             Self::TransferEncoding => "Transfer-Encoding: chunked".to_owned(),
             Self::Custom { name, value } => format!("{}: {}", name, value),
         }
@@ -68,4 +72,15 @@ fn parse_header(line: &[u8]) -> anyhow::Result<HttpHeader> {
         .split_once(':')
         .ok_or_else(|| anyhow::Error::msg("semicolon ':' not found"))?;
     HttpHeader::from_name_value(name.trim(), value)
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn try_http_date() {
+        let h = HttpHeader::from_name_value("Date", " Fri, 24 Nov 2023 06:58:19 GMT");
+        println!("{:?} -> {}", h, h.as_ref().unwrap().to_string());
+    }
 }
