@@ -1,11 +1,10 @@
-use anyhow::Context;
 use http_chunked::HttpHeader;
-use std::io::Write;
 
 const HOST: &str = "anglesharp.azurewebsites.net:80";
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let mut http = http_chunked::HttpContext::new(HOST).await?;
+    println!("We have http: {:?}", http);
     http.begin();
     {
         http.begin_request(http_chunked::Method::Get, "/Chunked")

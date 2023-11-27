@@ -101,7 +101,8 @@ impl<S: Socket> HttpContext<S> {
                 None => self.response_meta.extend_from_slice(&buf[..n]),
             }
         }
-        let mut chunked = false;
+
+        // TODO: enquire what is the correct behaviour of the client received both content-length and transfer-encoding: chunked
         for header in self.response_header_iter() {
             if let HttpHeader::ContentLength(content_length) = header {
                 self.state.replace(State::Content {
@@ -110,11 +111,11 @@ impl<S: Socket> HttpContext<S> {
                 });
             }
             if let HttpHeader::TransferEncoding = header {
-                chunked = true;
+                self.state.replace(State::Chunked {
+                    chunk_size: usize::MAX,
+                    bytes_read: usize::MAX,
+                });
             }
-        }
-        if chunked {
-            self.start_chunk().await?;
         }
         Ok(())
     }
@@ -150,7 +151,14 @@ impl<S: Socket> HttpContext<S> {
                 chunk_size: _,
                 bytes_read: _,
             } => {
-                let n = self.get_chunk(buf).await?;
+                if self.bytes_wait()? == 0 {
+                    self.start_chunk().await?;
+                }
+                let n = if self.bytes_wait().is_ok() {
+                    self.get_chunk(buf).await?
+                } else {
+                    return Ok(0);
+                };
                 println!(
                     "Read chunk. Left in rolling: {:?}",
                     std::str::from_utf8(&self.rollin).unwrap()
@@ -175,16 +183,15 @@ impl<S: Socket> HttpContext<S> {
             return Ok(need);
         }
 
-        let place = &mut buf[..start];
-        place.copy_from_slice(&self.rollin);
+        buf[..start].copy_from_slice(&self.rollin);
         self.rollin.clear();
         self.reduce_bytes(start)?;
 
-        println!("Look to socket");
+        println!("Get chunk. Look to socket");
         match self.socket.read(&mut buf[start..need]).await {
             Ok(has_read) => {
                 if has_read + start != buf.len() {
-                    println!("have read {} but asked {}", has_read + start, buf.len());
+                    println!("has read {} but asked {}", has_read + start, buf.len());
                 }
                 self.reduce_bytes(has_read)?;
                 Ok(has_read + start)
@@ -295,7 +302,11 @@ impl<S: Socket> HttpContext<S> {
         loop {
             if self.rollin.starts_with(b"\r\n") {
                 self.rollin = self.rollin[2..].to_vec();
-                return self.start_chunk().await;
+                println!(
+                    "End chunk. Left in rollin: {:?}",
+                    std::str::from_utf8(&self.rollin)
+                );
+                break;
             }
             let mut buf = [0; 2];
             println!("End chunk. Look to socket");
@@ -307,6 +318,7 @@ impl<S: Socket> HttpContext<S> {
                 self.rollin.extend_from_slice(&buf[..n]);
             }
         }
+        Ok(())
     }
 }
 
