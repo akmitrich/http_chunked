@@ -1,3 +1,4 @@
+/// Only GET & POST methods are acceptable
 #[derive(Debug)]
 pub enum Method {
     Get,

@@ -2,7 +2,7 @@ use anyhow::Context;
 use http_chunked::HttpHeader;
 use std::io::Write;
 
-const HOST: &str = "api.asmsolutions.ru:80";
+const HOST: &str = "http://api.asmsolutions.ru/";
 const _KEY: &str = "ABCD67520001";
 
 #[tokio::main]
@@ -10,10 +10,9 @@ async fn main() -> anyhow::Result<()> {
     let mut http = http_chunked::http::Context::new(HOST).await?;
     http.begin();
     {
-        http.begin_request(http_chunked::Method::Get, "/").await?;
+        http.begin_request(http_chunked::Method::Get).await?;
         {
-            http.request_header(HttpHeader::from_name_value("Host", HOST)?)
-                .await?;
+            http.request_header(http.host_header()).await?;
             http.request_header(HttpHeader::from_name_value("Foo", "Bar")?)
                 .await?;
             http.request_header(HttpHeader::from_name_value("Hello", "World")?)

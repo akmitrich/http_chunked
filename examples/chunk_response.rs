@@ -1,20 +1,15 @@
 use http_chunked::HttpHeader;
 
-const HOST: &str = "anglesharp.azurewebsites.net:80";
+const HOST: &str = "http://anglesharp.azurewebsites.net/Chunked";
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let mut http = http_chunked::http::Context::new(HOST).await?;
     println!("We have http: {:?} ({:?})", http.debug(), http.host());
     http.begin();
     {
-        http.begin_request(http_chunked::Method::Get, "/Chunked")
-            .await?;
+        http.begin_request(http_chunked::Method::Get).await?;
         {
-            http.request_header(HttpHeader::from_name_value(
-                "Host",
-                HOST.split_once(':').map(|(host, _)| host).unwrap(),
-            )?)
-            .await?;
+            http.request_header(http.host_header()).await?;
             http.request_header(HttpHeader::from_name_value("Foo", "Bar")?)
                 .await?;
             http.request_header(HttpHeader::from_name_value("Hello", "World")?)

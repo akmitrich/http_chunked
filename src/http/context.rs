@@ -3,7 +3,7 @@ use std::ops::{AddAssign, DerefMut};
 
 use crate::{Method, Socket};
 use anyhow::Context as AnyHowContext;
-use tokio::net::{TcpStream, ToSocketAddrs};
+use tokio::net::TcpStream;
 
 use self::context_state::State;
 
@@ -12,25 +12,37 @@ use super::skip_line;
 use super::status_line::Status;
 #[derive(Debug)]
 pub struct Context<S: Socket = TcpStream> {
+    url: url::Url,
     buffer: crate::bbuf::Buffer<S>,
     response_meta: Vec<u8>,
     state: RefCell<State>,
 }
 
 impl Context {
-    pub async fn new(host: impl ToSocketAddrs) -> anyhow::Result<Self> {
+    pub async fn new(url: impl AsRef<str>) -> anyhow::Result<Self> {
+        let url = url::Url::parse(url.as_ref()).context("parse URL")?;
+        let buffer = crate::bbuf::Buffer::new(
+            TcpStream::connect((url.authority(), url.port().unwrap_or(80)))
+                .await
+                .context("establish connection to some host")?,
+        );
         Ok(Self {
-            buffer: crate::bbuf::Buffer::new(
-                TcpStream::connect(host)
-                    .await
-                    .context("establish connection to some host")?,
-            ),
+            url,
+            buffer,
             response_meta: vec![],
             state: RefCell::new(State::SendingRequest),
         })
     }
+
     pub fn host(&self) -> String {
-        self.buffer.socket_addr().unwrap().to_string()
+        self.url.host().unwrap().to_string()
+    }
+
+    pub fn host_header(&self) -> HttpHeader {
+        HttpHeader::Custom {
+            name: "Host".to_owned(),
+            value: self.host(),
+        }
     }
 }
 
@@ -40,12 +52,9 @@ impl<S: Socket> Context<S> {
     pub fn end(&mut self) {}
 
     // TODO: check resource for correct value as there is a risk that request might become malformed
-    pub async fn begin_request(
-        &mut self,
-        method: Method,
-        resource: impl AsRef<str>,
-    ) -> anyhow::Result<()> {
-        let msg = format!("{} {} HTTP/1.1\r\n", method.as_ref(), resource.as_ref());
+    pub async fn begin_request(&mut self, method: Method) -> anyhow::Result<()> {
+        let resource = self.url.path();
+        let msg = format!("{} {} HTTP/1.1\r\n", method.as_ref(), resource);
         self.buffer.write_str(&msg).await.context("send start line")
     }
 
@@ -82,7 +91,8 @@ impl<S: Socket> Context<S> {
                     bytes_read: _,
                 } = self.state()
                 {
-                    // ignore content-length header
+                    // ignore content-length header according https://datatracker.ietf.org/doc/html/rfc9112#name-message-body-length
+                    // refer to the clause 3.
                 } else {
                     self.state.replace(State::Content {
                         content_length,
