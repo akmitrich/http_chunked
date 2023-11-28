@@ -3,35 +3,34 @@ use std::ops::{AddAssign, DerefMut};
 
 use crate::{Method, Socket};
 use anyhow::Context;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpStream, ToSocketAddrs};
 
 use self::context_state::State;
 
 use super::headers::{HeaderIter, HttpHeader};
+use super::skip_line;
 use super::status_line::Status;
-use super::{get_line, skip_line};
 #[derive(Debug)]
 pub struct HttpContext<S: Socket = TcpStream> {
-    socket: S,
+    pub buffer: crate::bbuf::Buffer<S>,
     pub response_meta: Vec<u8>,
-    pub rollin: Vec<u8>,
     state: RefCell<State>,
 }
 
 impl HttpContext {
     pub async fn new(host: impl ToSocketAddrs) -> anyhow::Result<Self> {
         Ok(Self {
-            socket: TcpStream::connect(host)
-                .await
-                .context("establish connection to some host")?,
+            buffer: crate::bbuf::Buffer::new(
+                TcpStream::connect(host)
+                    .await
+                    .context("establish connection to some host")?,
+            ),
             response_meta: vec![],
-            rollin: vec![],
             state: RefCell::new(State::SendingRequest),
         })
     }
     pub fn host(&self) -> String {
-        self.socket.peer_addr().unwrap().to_string()
+        self.buffer.socket_addr().unwrap().to_string()
     }
 }
 
@@ -47,25 +46,26 @@ impl<S: Socket> HttpContext<S> {
         resource: impl AsRef<str>,
     ) -> anyhow::Result<()> {
         let msg = format!("{} {} HTTP/1.1\r\n", method.as_ref(), resource.as_ref());
-        self.write_str(&msg).await.context("send start line")
+        self.buffer.write_str(&msg).await.context("send start line")
     }
 
     pub fn end_request(&mut self) {}
 
     pub async fn request_header(&mut self, header: HttpHeader) -> anyhow::Result<()> {
         let msg = format!("{}\r\n", header.to_string());
-        self.write_str(&msg).await.context("request header")
+        self.buffer.write_str(&msg).await.context("request header")
     }
 
     pub async fn request_headers_end(&mut self) -> anyhow::Result<()> {
-        self.write_str("\r\n")
+        self.buffer
+            .write_str("\r\n")
             .await
             .context("end of request headers")
     }
 
     pub async fn request_body_chunk(&mut self, chunk: impl AsRef<[u8]>) -> anyhow::Result<()> {
-        self.socket
-            .write_all(chunk.as_ref())
+        self.buffer
+            .write_some_bytes(chunk)
             .await
             .context("send request body chunk")
     }
@@ -73,34 +73,7 @@ impl<S: Socket> HttpContext<S> {
 
 impl<S: Socket> HttpContext<S> {
     pub async fn response_begin(&mut self) -> anyhow::Result<()> {
-        const MAX_HEADERS_SIZE: usize = 4 * 1024;
-        let mut buf = [0; MAX_HEADERS_SIZE];
-        self.response_meta.clear();
-        loop {
-            let n = self
-                .socket
-                .read(&mut buf)
-                .await
-                .context("read response begin")?;
-            if n == 0 {
-                break;
-            }
-            match buf[..n]
-                .windows(4)
-                .enumerate()
-                .find(|(_, w)| w.eq(b"\r\n\r\n"))
-            {
-                Some((payload_index, _)) => {
-                    self.response_meta.extend_from_slice(&buf[..payload_index]);
-                    let body_index = payload_index + 4;
-                    if body_index < n {
-                        self.rollin.extend_from_slice(&buf[body_index..n]);
-                    }
-                    break;
-                }
-                None => self.response_meta.extend_from_slice(&buf[..n]),
-            }
-        }
+        self.response_meta = self.buffer.read_until_and_chop(b"\r\n\r\n").await?;
 
         // TODO: enquire what is the correct behaviour of the client received both content-length and transfer-encoding: chunked
         for header in self.response_header_iter() {
@@ -161,7 +134,7 @@ impl<S: Socket> HttpContext<S> {
                 };
                 println!(
                     "Read chunk. Left in rolling: {:?}",
-                    std::str::from_utf8(&self.rollin).unwrap()
+                    std::str::from_utf8(self.buffer.buffer()).unwrap()
                 );
                 if self.bytes_wait()? == 0 {
                     self.end_chunk().await?;
@@ -174,36 +147,9 @@ impl<S: Socket> HttpContext<S> {
 
     async fn get_chunk(&mut self, buf: &mut [u8]) -> anyhow::Result<usize> {
         let need = buf.len().min(self.bytes_wait()?);
-        let start = self.rollin.len();
-        if start > need {
-            println!("start has {}, need {need}", self.rollin.len());
-            buf[..need].copy_from_slice(&self.rollin[..need]);
-            self.rollin = self.rollin[need..].to_vec();
-            self.reduce_bytes(need)?;
-            return Ok(need);
-        }
-
-        buf[..start].copy_from_slice(&self.rollin);
-        self.rollin.clear();
-        self.reduce_bytes(start)?;
-
-        println!("Get chunk. Look to socket");
-        match self.socket.read(&mut buf[start..need]).await {
-            Ok(has_read) => {
-                if has_read + start != buf.len() {
-                    println!("has read {} but asked {}", has_read + start, buf.len());
-                }
-                self.reduce_bytes(has_read)?;
-                Ok(has_read + start)
-            }
-            Err(e) => {
-                if start > 0 {
-                    Ok(start)
-                } else {
-                    Err(e).context("cannot read from connection")
-                }
-            }
-        }
+        let result = self.buffer.read_some_bytes(&mut buf[..need]).await?;
+        self.reduce_bytes(result)?;
+        Ok(result)
     }
 
     pub fn response_end(&mut self) {}
@@ -214,9 +160,9 @@ impl<S: Socket> HttpContext<S> {
         match self.state() {
             State::SendingRequest => false,
             State::Content {
-                content_length: _,
-                bytes_read: _,
-            } => true,
+                content_length,
+                bytes_read,
+            } => bytes_read < content_length,
             State::Chunked {
                 chunk_size: _,
                 bytes_read: _,
@@ -256,8 +202,8 @@ impl<S: Socket> HttpContext<S> {
             State::Content {
                 content_length: _,
                 bytes_read,
-            } => bytes_read.add_assign(bytes),
-            State::Chunked {
+            }
+            | State::Chunked {
                 chunk_size: _,
                 bytes_read,
             } => bytes_read.add_assign(bytes),
@@ -267,67 +213,26 @@ impl<S: Socket> HttpContext<S> {
     }
 
     async fn start_chunk(&mut self) -> anyhow::Result<()> {
-        loop {
-            let chunk_size_str =
-                std::str::from_utf8(get_line(&self.rollin)).context("start chunk with non-UTF8")?;
-            if self.rollin.len() > chunk_size_str.len() {
-                let chunk_size = usize::from_str_radix(chunk_size_str, 16)
-                    .context("chunk header is not hexadecimal")?;
-                println!("Start chunk. Size = {} {:x}", chunk_size, chunk_size);
-                if chunk_size == 0 {
-                    self.state.replace(State::Exhausted);
-                } else {
-                    self.state.replace(State::Chunked {
-                        chunk_size,
-                        bytes_read: 0,
-                    });
-                }
-                self.rollin = skip_line(&self.rollin).to_vec();
-                break;
-            }
-            let mut buf = [0; 1024];
-            println!("Start chunk. Look to socket");
-            let n = self.socket.read(&mut buf).await?;
-            if n == 0 {
-                println!("Start chunk. wait 0.1 s");
-                tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-            } else {
-                self.rollin.extend_from_slice(&buf[..n]);
-            }
+        let chunk_size_line = self.buffer.read_line().await.context("read chunk size")?;
+        let chunk_size_str =
+            std::str::from_utf8(&chunk_size_line).context("chunk size contains non-UTF8")?;
+        let chunk_size =
+            usize::from_str_radix(chunk_size_str, 16).context("chunk header is not hexadecimal")?;
+        println!("Start chunk. Size = {} {:x}", chunk_size, chunk_size);
+        if chunk_size == 0 {
+            self.state.replace(State::Exhausted);
+        } else {
+            self.state.replace(State::Chunked {
+                chunk_size,
+                bytes_read: 0,
+            });
         }
         Ok(())
     }
 
     async fn end_chunk(&mut self) -> anyhow::Result<()> {
-        loop {
-            if self.rollin.starts_with(b"\r\n") {
-                self.rollin = self.rollin[2..].to_vec();
-                println!(
-                    "End chunk. Left in rollin: {:?}",
-                    std::str::from_utf8(&self.rollin)
-                );
-                break;
-            }
-            let mut buf = [0; 2];
-            println!("End chunk. Look to socket");
-            let n = self.socket.read(&mut buf).await?;
-            if n == 0 {
-                println!("End chunk. wait 0.1 s");
-                tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-            } else {
-                self.rollin.extend_from_slice(&buf[..n]);
-            }
-        }
+        self.buffer.read_line().await?;
         Ok(())
-    }
-}
-
-impl<S: Socket> HttpContext<S> {
-    async fn write_str(&mut self, data: &str) -> anyhow::Result<()> {
-        self.socket
-            .write_all(data.as_bytes())
-            .await
-            .context("write str to socket")
     }
 }
 

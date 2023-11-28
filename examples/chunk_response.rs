@@ -31,7 +31,7 @@ async fn main() -> anyhow::Result<()> {
         println!(
             "Before {:?} -> {:?}",
             http.state(),
-            std::str::from_utf8(&http.rollin)
+            std::str::from_utf8(http.buffer.buffer())
         );
         for header in http.response_header_iter() {
             println!("{:?}", header);
@@ -49,7 +49,7 @@ async fn main() -> anyhow::Result<()> {
         println!(
             "After {:?} -> {:?}",
             http.state(),
-            std::str::from_utf8(&http.rollin)
+            std::str::from_utf8(http.buffer.buffer())
         );
         http.response_end();
     }
