@@ -22,9 +22,13 @@ impl Context {
     pub async fn new(url: impl AsRef<str>) -> anyhow::Result<Self> {
         let url = url::Url::parse(url.as_ref()).context("parse URL")?;
         let buffer = crate::bbuf::Buffer::new(
-            TcpStream::connect((url.authority(), url.port().unwrap_or(80)))
-                .await
-                .context("establish connection to some host")?,
+            TcpStream::connect((
+                url.host_str()
+                    .ok_or_else(|| anyhow::Error::msg("URL has no host"))?,
+                url.port_or_known_default().unwrap_or(80),
+            ))
+            .await
+            .context("establish connection to some host")?,
         );
         Ok(Self {
             url,
@@ -39,10 +43,7 @@ impl Context {
     }
 
     pub fn host_header(&self) -> HttpHeader {
-        HttpHeader::Custom {
-            name: "Host".to_owned(),
-            value: self.host(),
-        }
+        HttpHeader::Host(self.url.host().unwrap().to_owned())
     }
 }
 

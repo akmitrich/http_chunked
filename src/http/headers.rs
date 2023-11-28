@@ -8,6 +8,7 @@ pub enum HttpHeader {
     ContentLength(usize),
     ContentType { media_type: String },
     Date(httpdate::HttpDate),
+    Host(url::Host),
     TransferEncodingChunked,
 }
 
@@ -21,6 +22,7 @@ impl HttpHeader {
                 media_type: value.trim().to_owned(),
             }),
             "date" => Ok(Self::Date(value.parse()?)),
+            "host" => Ok(Self::Host(url::Host::parse(value.trim())?)),
             "transfer-encoding" => transfer_encoding_accept(value),
             _ => Ok(Self::Custom {
                 name: name.to_owned(),
@@ -35,7 +37,8 @@ impl ToString for HttpHeader {
         match self {
             Self::ContentLength(length) => format!("Content-Length: {}", length),
             Self::ContentType { media_type } => format!("Content-Type: {}", media_type),
-            Self::Date(date) => date.to_string(),
+            Self::Date(date) => format!("Date: {}", date),
+            Self::Host(host) => format!("Host: {}", host),
             Self::TransferEncodingChunked => "Transfer-Encoding: chunked".to_owned(),
             Self::Custom { name, value } => format!("{}: {}", name, value),
         }
@@ -74,17 +77,6 @@ fn parse_header(line: &[u8]) -> anyhow::Result<HttpHeader> {
     HttpHeader::from_name_value(name.trim(), value)
 }
 
-#[cfg(test)]
-mod test {
-    use super::*;
-
-    #[test]
-    fn try_http_date() {
-        let h = HttpHeader::from_name_value("Date", " Fri, 24 Nov 2023 06:58:19 GMT").unwrap();
-        assert_eq!("Fri, 24 Nov 2023 06:58:19 GMT", h.to_string());
-    }
-}
-
 fn transfer_encoding_accept(header_value: &str) -> anyhow::Result<HttpHeader> {
     for val in header_value.to_ascii_lowercase().split(',') {
         if val.trim().eq("chunked") {
@@ -94,4 +86,21 @@ fn transfer_encoding_accept(header_value: &str) -> anyhow::Result<HttpHeader> {
     Err(anyhow::Error::msg(
         "only chunked transfer-encoding is acceptable",
     ))
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn try_http_date() {
+        let h = HttpHeader::from_name_value("Date", " Fri, 24 Nov 2023 06:58:19 GMT").unwrap();
+        assert_eq!("Date: Fri, 24 Nov 2023 06:58:19 GMT", h.to_string());
+    }
+
+    #[test]
+    fn try_parse_host() {
+        let h = HttpHeader::from_name_value("host", " test.host.example.org".trim()).unwrap();
+        assert_eq!("Host: test.host.example.org", h.to_string());
+    }
 }

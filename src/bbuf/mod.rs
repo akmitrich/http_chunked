@@ -1,10 +1,7 @@
 use crate::Socket;
 use anyhow::Context;
 use std::ops::AddAssign;
-use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt},
-    net::TcpStream,
-};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 const MAX_BUFFER_SIZE: usize = 4096;
 
@@ -14,12 +11,6 @@ pub struct Buffer<S: Socket> {
     begin: usize,
     end: usize,
     socket: S,
-}
-
-impl Buffer<TcpStream> {
-    pub fn socket_addr(&self) -> anyhow::Result<std::net::SocketAddr> {
-        self.socket.peer_addr().context("socket addr")
-    }
 }
 
 impl<S: Socket> Buffer<S> {

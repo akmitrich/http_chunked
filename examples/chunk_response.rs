@@ -4,7 +4,7 @@ const HOST: &str = "http://anglesharp.azurewebsites.net/Chunked";
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let mut http = http_chunked::http::Context::new(HOST).await?;
-    println!("We have http: {:?} ({:?})", http.debug(), http.host());
+    println!("We have http: {:?} (Host={:?})", http.debug(), http.host_header());
     http.begin();
     {
         http.begin_request(http_chunked::Method::Get).await?;
