@@ -7,7 +7,7 @@ const _KEY: &str = "ABCD67520001";
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let mut http = http_chunked::HttpContext::new(HOST).await?;
+    let mut http = http_chunked::http::Context::new(HOST).await?;
     http.begin();
     {
         http.begin_request(http_chunked::Method::Get, "/").await?;

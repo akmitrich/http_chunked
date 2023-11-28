@@ -3,15 +3,18 @@ use http_chunked::HttpHeader;
 const HOST: &str = "anglesharp.azurewebsites.net:80";
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let mut http = http_chunked::HttpContext::new(HOST).await?;
-    println!("We have http: {:?}", http);
+    let mut http = http_chunked::http::Context::new(HOST).await?;
+    println!("We have http: {:?} ({:?})", http.debug(), http.host());
     http.begin();
     {
         http.begin_request(http_chunked::Method::Get, "/Chunked")
             .await?;
         {
-            http.request_header(HttpHeader::from_name_value("Host", HOST)?)
-                .await?;
+            http.request_header(HttpHeader::from_name_value(
+                "Host",
+                HOST.split_once(':').map(|(host, _)| host).unwrap(),
+            )?)
+            .await?;
             http.request_header(HttpHeader::from_name_value("Foo", "Bar")?)
                 .await?;
             http.request_header(HttpHeader::from_name_value("Hello", "World")?)
@@ -23,15 +26,11 @@ async fn main() -> anyhow::Result<()> {
         println!("The request has been sent.\n{}", "-".repeat(40));
 
         http.response_begin().await?;
+        println!("Before {:?} -> {:?}", http.state(), http.debug());
         println!(
             "Status: {:?}\n\nHeaders:\n{}",
             http.status()?,
             "-".repeat(40)
-        );
-        println!(
-            "Before {:?} -> {:?}",
-            http.state(),
-            std::str::from_utf8(http.buffer.buffer())
         );
         for header in http.response_header_iter() {
             println!("{:?}", header);
@@ -46,11 +45,7 @@ async fn main() -> anyhow::Result<()> {
             }
         }
 
-        println!(
-            "After {:?} -> {:?}",
-            http.state(),
-            std::str::from_utf8(http.buffer.buffer())
-        );
+        println!("After {:?} -> {:?}", http.state(), http.debug());
         http.response_end();
     }
     http.end();

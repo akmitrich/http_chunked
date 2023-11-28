@@ -8,7 +8,7 @@ pub enum HttpHeader {
     ContentLength(usize),
     ContentType { media_type: String },
     Date(httpdate::HttpDate),
-    TransferEncoding,
+    TransferEncodingChunked,
 }
 
 impl HttpHeader {
@@ -21,7 +21,7 @@ impl HttpHeader {
                 media_type: value.trim().to_owned(),
             }),
             "date" => Ok(Self::Date(value.parse()?)),
-            "transfer-encoding" => Ok(Self::TransferEncoding),
+            "transfer-encoding" => transfer_encoding_accept(value),
             _ => Ok(Self::Custom {
                 name: name.to_owned(),
                 value: value.to_owned(),
@@ -36,7 +36,7 @@ impl ToString for HttpHeader {
             Self::ContentLength(length) => format!("Content-Length: {}", length),
             Self::ContentType { media_type } => format!("Content-Type: {}", media_type),
             Self::Date(date) => date.to_string(),
-            Self::TransferEncoding => "Transfer-Encoding: chunked".to_owned(),
+            Self::TransferEncodingChunked => "Transfer-Encoding: chunked".to_owned(),
             Self::Custom { name, value } => format!("{}: {}", name, value),
         }
     }
@@ -83,4 +83,15 @@ mod test {
         let h = HttpHeader::from_name_value("Date", " Fri, 24 Nov 2023 06:58:19 GMT").unwrap();
         assert_eq!("Fri, 24 Nov 2023 06:58:19 GMT", h.to_string());
     }
+}
+
+fn transfer_encoding_accept(header_value: &str) -> anyhow::Result<HttpHeader> {
+    for val in header_value.to_ascii_lowercase().split(',') {
+        if val.trim().eq("chunked") {
+            return Ok(HttpHeader::TransferEncodingChunked);
+        }
+    }
+    Err(anyhow::Error::msg(
+        "only chunked transfer-encoding is acceptable",
+    ))
 }

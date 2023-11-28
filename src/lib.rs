@@ -1,6 +1,6 @@
 mod bbuf;
-mod http;
+pub mod http;
 mod socket;
 
-pub use http::{headers::HttpHeader, method::Method, HttpContext};
+pub use http::{headers::HttpHeader, method::Method};
 pub use socket::Socket;

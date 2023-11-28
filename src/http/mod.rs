@@ -3,7 +3,7 @@ pub mod headers;
 pub mod method;
 pub mod status_line;
 
-pub use context::HttpContext;
+pub use context::Context;
 
 fn end_of_line(line: &[u8]) -> usize {
     line.windows(2)

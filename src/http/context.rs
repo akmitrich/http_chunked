@@ -2,7 +2,7 @@ use std::cell::RefCell;
 use std::ops::{AddAssign, DerefMut};
 
 use crate::{Method, Socket};
-use anyhow::Context;
+use anyhow::Context as AnyHowContext;
 use tokio::net::{TcpStream, ToSocketAddrs};
 
 use self::context_state::State;
@@ -11,13 +11,13 @@ use super::headers::{HeaderIter, HttpHeader};
 use super::skip_line;
 use super::status_line::Status;
 #[derive(Debug)]
-pub struct HttpContext<S: Socket = TcpStream> {
-    pub buffer: crate::bbuf::Buffer<S>,
-    pub response_meta: Vec<u8>,
+pub struct Context<S: Socket = TcpStream> {
+    buffer: crate::bbuf::Buffer<S>,
+    response_meta: Vec<u8>,
     state: RefCell<State>,
 }
 
-impl HttpContext {
+impl Context {
     pub async fn new(host: impl ToSocketAddrs) -> anyhow::Result<Self> {
         Ok(Self {
             buffer: crate::bbuf::Buffer::new(
@@ -34,7 +34,7 @@ impl HttpContext {
     }
 }
 
-impl<S: Socket> HttpContext<S> {
+impl<S: Socket> Context<S> {
     pub fn begin(&mut self) {}
 
     pub fn end(&mut self) {}
@@ -71,19 +71,26 @@ impl<S: Socket> HttpContext<S> {
     }
 }
 
-impl<S: Socket> HttpContext<S> {
+impl<S: Socket> Context<S> {
     pub async fn response_begin(&mut self) -> anyhow::Result<()> {
         self.response_meta = self.buffer.read_until_and_chop(b"\r\n\r\n").await?;
 
-        // TODO: enquire what is the correct behaviour of the client received both content-length and transfer-encoding: chunked
         for header in self.response_header_iter() {
             if let HttpHeader::ContentLength(content_length) = header {
-                self.state.replace(State::Content {
-                    content_length,
-                    bytes_read: 0,
-                });
+                if let State::Chunked {
+                    chunk_size: _,
+                    bytes_read: _,
+                } = self.state()
+                {
+                    // ignore content-length header
+                } else {
+                    self.state.replace(State::Content {
+                        content_length,
+                        bytes_read: 0,
+                    });
+                }
             }
-            if let HttpHeader::TransferEncoding = header {
+            if let HttpHeader::TransferEncodingChunked = header {
                 self.state.replace(State::Chunked {
                     chunk_size: usize::MAX,
                     bytes_read: usize::MAX,
@@ -132,10 +139,6 @@ impl<S: Socket> HttpContext<S> {
                 } else {
                     return Ok(0);
                 };
-                println!(
-                    "Read chunk. Left in rolling: {:?}",
-                    std::str::from_utf8(self.buffer.buffer()).unwrap()
-                );
                 if self.bytes_wait()? == 0 {
                     self.end_chunk().await?;
                 }
@@ -155,7 +158,7 @@ impl<S: Socket> HttpContext<S> {
     pub fn response_end(&mut self) {}
 }
 
-impl<S: Socket> HttpContext<S> {
+impl<S: Socket> Context<S> {
     pub fn has_response(&self) -> bool {
         match self.state() {
             State::SendingRequest => false,
@@ -183,6 +186,13 @@ impl<S: Socket> HttpContext<S> {
         }
     }
 
+    pub fn debug(&self) -> String {
+        format!(
+            "Rolling buffer is: {:?}",
+            std::str::from_utf8(self.buffer.buffer())
+        )
+    }
+
     fn bytes_wait(&self) -> anyhow::Result<usize> {
         match self.state() {
             State::Content {
@@ -207,18 +217,21 @@ impl<S: Socket> HttpContext<S> {
                 chunk_size: _,
                 bytes_read,
             } => bytes_read.add_assign(bytes),
-            _ => return Err(anyhow::Error::msg("ask for bytes reduce")),
+            _ => return Err(anyhow::Error::msg("reduce bytes")),
         }
         Ok(())
     }
 
     async fn start_chunk(&mut self) -> anyhow::Result<()> {
-        let chunk_size_line = self.buffer.read_line().await.context("read chunk size")?;
+        let chunk_size_line = self
+            .buffer
+            .read_line()
+            .await
+            .context("read chunk header from socket")?;
         let chunk_size_str =
-            std::str::from_utf8(&chunk_size_line).context("chunk size contains non-UTF8")?;
+            std::str::from_utf8(&chunk_size_line).context("chunk header contains non-UTF8")?;
         let chunk_size =
             usize::from_str_radix(chunk_size_str, 16).context("chunk header is not hexadecimal")?;
-        println!("Start chunk. Size = {} {:x}", chunk_size, chunk_size);
         if chunk_size == 0 {
             self.state.replace(State::Exhausted);
         } else {
