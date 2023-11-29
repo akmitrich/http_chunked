@@ -24,12 +24,12 @@ impl<S: Socket> Buffer<S> {
     }
 
     pub async fn write_str(&mut self, data: &str) -> anyhow::Result<()> {
-        self.write_some_bytes(data.as_bytes())
+        self.write_bytes(data.as_bytes())
             .await
             .context("write str to socket")
     }
 
-    pub async fn write_some_bytes(&mut self, data: impl AsRef<[u8]>) -> anyhow::Result<()> {
+    pub async fn write_bytes(&mut self, data: impl AsRef<[u8]>) -> anyhow::Result<()> {
         self.socket
             .write_all(data.as_ref())
             .await
@@ -73,8 +73,18 @@ impl<S: Socket> Buffer<S> {
 
         let rest = &mut buf[has..];
         if !rest.is_empty() {
-            self.refill_buffer().await.context("read some bytes")?;
-            self.shift_buffer(copy_as_much_as_possible(rest, self.buffer(), &mut result))?;
+            match self.refill_buffer().await {
+                Ok(_) => {
+                    self.shift_buffer(copy_as_much_as_possible(rest, self.buffer(), &mut result))?;
+                }
+                Err(e) => {
+                    if has > 0 {
+                        // ignore error this time because we have some bytes in the buffer
+                    } else {
+                        return Err(e);
+                    }
+                }
+            };
         }
         Ok(result)
     }

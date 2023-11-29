@@ -1,4 +1,4 @@
-use anyhow::{Context, Ok};
+use anyhow::Context;
 
 use super::{get_line, skip_line};
 
@@ -91,6 +91,16 @@ fn transfer_encoding_accept(header_value: &str) -> anyhow::Result<HttpHeader> {
 #[cfg(test)]
 mod test {
     use super::*;
+
+    #[test]
+    fn try_content_length() {
+        let h = parse_header(b"Content-Length: 179").unwrap();
+        if let HttpHeader::ContentLength(len) = h {
+            assert_eq!(179, len)
+        } else {
+            panic!("Cannot create content-length header");
+        }
+    }
 
     #[test]
     fn try_http_date() {

@@ -1,19 +1,18 @@
+use self::context_state::State;
+use crate::{bbuf::Buffer, Method, Socket};
+use anyhow::Context as AnyHowContext;
 use std::cell::RefCell;
 use std::ops::{AddAssign, DerefMut};
-
-use crate::{Method, Socket};
-use anyhow::Context as AnyHowContext;
 use tokio::net::TcpStream;
-
-use self::context_state::State;
 
 use super::headers::{HeaderIter, HttpHeader};
 use super::skip_line;
 use super::status_line::Status;
+
 #[derive(Debug)]
 pub struct Context<S: Socket = TcpStream> {
     url: url::Url,
-    buffer: crate::bbuf::Buffer<S>,
+    buffer: Buffer<S>,
     response_meta: Vec<u8>,
     state: RefCell<State>,
 }
@@ -21,14 +20,14 @@ pub struct Context<S: Socket = TcpStream> {
 impl Context {
     pub async fn new(url: impl AsRef<str>) -> anyhow::Result<Self> {
         let url = url::Url::parse(url.as_ref()).context("parse URL")?;
-        let buffer = crate::bbuf::Buffer::new(
+        let buffer = Buffer::new(
             TcpStream::connect((
                 url.host_str()
                     .ok_or_else(|| anyhow::Error::msg("URL has no host"))?,
                 url.port_or_known_default().unwrap_or(80),
             ))
             .await
-            .context("establish connection to some host")?,
+            .context("establish connection to remote host")?,
         );
         Ok(Self {
             url,
@@ -52,7 +51,6 @@ impl<S: Socket> Context<S> {
 
     pub fn end(&mut self) {}
 
-    // TODO: check resource for correct value as there is a risk that request might become malformed
     pub async fn begin_request(&mut self, method: Method) -> anyhow::Result<()> {
         let resource = self.url.path();
         let msg = format!("{} {} HTTP/1.1\r\n", method.as_ref(), resource);
@@ -63,7 +61,10 @@ impl<S: Socket> Context<S> {
 
     pub async fn request_header(&mut self, header: HttpHeader) -> anyhow::Result<()> {
         let msg = format!("{}\r\n", header.to_string());
-        self.buffer.write_str(&msg).await.context("request header")
+        self.buffer
+            .write_str(&msg)
+            .await
+            .context("send request header")
     }
 
     pub async fn request_headers_end(&mut self) -> anyhow::Result<()> {
@@ -75,7 +76,7 @@ impl<S: Socket> Context<S> {
 
     pub async fn request_body_chunk(&mut self, chunk: impl AsRef<[u8]>) -> anyhow::Result<()> {
         self.buffer
-            .write_some_bytes(chunk)
+            .write_bytes(chunk)
             .await
             .context("send request body chunk")
     }
